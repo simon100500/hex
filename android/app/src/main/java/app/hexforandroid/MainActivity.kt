@@ -1,11 +1,11 @@
 package app.hexforandroid
 
 import android.Manifest
-import android.animation.ValueAnimator
 import android.app.Activity
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -19,12 +19,12 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowInsets
-import android.view.animation.OvershootInterpolator
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import kotlin.concurrent.thread
@@ -155,6 +155,8 @@ class MainActivity : Activity() {
         root.addView(ui.section("Dictation key"))
         stage = MicKeyView(this).apply {
             contentDescription = "Dictation key preview"
+            shape = BubbleShape.of(settings.keyShape)
+            sizeDp = MicKeyView.sizeFor(settings.keySize)
         }
         root.addView(ui.card().apply {
             row(FrameLayout(context).apply {
@@ -164,6 +166,20 @@ class MainActivity : Activity() {
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.END or Gravity.BOTTOM,
                 ).apply { setMargins(0, 0, ui.px(12), ui.px(12)) })
             })
+            row(ui.row("Shape", trailing = ui.iconSegmented(
+                listOf(BubbleShape.Circle, BubbleShape.Square, BubbleShape.Hexagon)
+                    .map { Triple(it.name, it.icon, it.label) }, settings.keyShape,
+            ) {
+                settings.keyShape = it
+                restyle()
+            }))
+            row(ui.row("Size", trailing = ui.segmented(
+                listOf("S" to "S", "M" to "M", "L" to "L"), settings.keySize,
+            ) {
+                settings.keySize = it
+                restyle()
+            }))
+            row(ui.row("Position", "Slide to clear the emoji key", below = offsetControl()))
             row(ui.row("Shows", "Only while a text field is focused and the keyboard is open"))
             row(ui.row("Tap", "Start, tap again to stop and insert"))
             row(ui.row("Hold", "Talk while held, release to insert"))
@@ -234,8 +250,41 @@ class MainActivity : Activity() {
     }
 
     private fun restyle() {
+        stage.shape = BubbleShape.of(settings.keyShape)
+        stage.sizeDp = MicKeyView.sizeFor(settings.keySize)
+        stage.invalidate()
         HexAccessibilityService.instance?.restyleBubble()
     }
+
+    /** Small nudges of the key along the keyboard's trailing edge, in dp. */
+    private fun offsetControl(): View {
+        val label = ui.text(offsetLabel(settings.keyOffsetX), 13f, ui.medium, ui.t.muted).apply {
+            gravity = Gravity.CENTER
+            minWidth = ui.px(58)
+        }
+        val bar = SeekBar(this).apply {
+            max = 48
+            progress = (settings.keyOffsetX + 32).coerceIn(0, max)
+            progressTintList = ColorStateList.valueOf(ui.t.accent)
+            thumbTintList = ColorStateList.valueOf(ui.t.accent)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (!fromUser) return
+                    settings.keyOffsetX = progress - 32
+                    label.text = offsetLabel(settings.keyOffsetX)
+                    HexAccessibilityService.instance?.restyleBubble()
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+            })
+        }
+        return ui.horizontal {
+            addView(bar, LinearLayout.LayoutParams(ui.px(150), ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(label, LinearLayout.LayoutParams(ui.px(58), ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+    }
+
+    private fun offsetLabel(dp: Int) = if (dp > 0) "+$dp dp" else "$dp dp"
 
     // --- State ----------------------------------------------------------------
 

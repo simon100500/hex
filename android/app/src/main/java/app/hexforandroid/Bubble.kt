@@ -31,6 +31,7 @@ class Bubble(
     private val keyboardBounds: () -> Rect?,
 ) {
     private val windows = context.getSystemService(WindowManager::class.java)
+    private val settings = Settings(context)
     private val key = MicKeyView(context)
     private var shown = false
     private var lastMessage: String? = null
@@ -52,10 +53,20 @@ class Bubble(
             if (Dictation.recording) controls.finish() else controls.press()
         }
         key.applyTheme(Tokens.of(context).dark)
+        applyStyle()
     }
 
-    /** Fixed size; kept for the settings screen's call. */
+    /** The shape and size the settings chose. */
+    private fun applyStyle() {
+        key.shape = BubbleShape.of(settings.keyShape)
+        key.sizeDp = MicKeyView.sizeFor(settings.keySize)
+        key.invalidate()
+    }
+
+    /** The settings changed the key's look or place. */
     fun restyle() {
+        applyStyle()
+        resize()
         if (shown) place()
     }
 
@@ -95,7 +106,7 @@ class Bubble(
     }
 
     private fun resize() {
-        val size = (MicKeyView.SIZE_DP * context.resources.displayMetrics.density).toInt()
+        val size = (key.sizeDp * context.resources.displayMetrics.density).toInt()
         params.width = size
         params.height = size
     }
@@ -108,9 +119,11 @@ class Bubble(
     private fun place(): Boolean {
         val bounds = keyboardBounds() ?: return false
         val density = context.resources.displayMetrics.density
-        val margin = (7 * density).toInt()
+        val margin = (4 * density).toInt()
+        val offset = (settings.keyOffsetX * density).toInt()
         val strip = (44 * density).toInt()
-        params.x = bounds.right - params.width - margin
+        val x = bounds.right - params.width - margin + offset
+        params.x = x.coerceIn(bounds.left, maxOf(bounds.left, bounds.right - params.width))
         params.y = bounds.top + maxOf(0, (strip - params.height) / 2)
         if (shown) windows.updateViewLayout(key, params)
         return true

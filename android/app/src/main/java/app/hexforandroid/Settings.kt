@@ -42,6 +42,12 @@ class Settings(context: Context) {
     var bubbleRight by bool("bubble_right", true)
     var bubbleTop by float("bubble_top", 0.42f)
 
+    /** The dictation key: its outline, size in dp, and how far it moves from the trailing edge. */
+    var keyShape by string("key_shape", BubbleShape.Circle.name)
+    var keySize by string("key_size", "M")
+    /** Positive moves the key right, negative left, in dp. */
+    var keyOffsetX by int("key_offset_x", 0)
+
     init {
         // 0.2 kept English text steps on by default; GigaAM's Russian must not
         // run them after an in-place update.
