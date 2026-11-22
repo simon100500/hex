@@ -33,6 +33,7 @@ class MicKeyView(context: Context) : View(context) {
     private val holder = RectF()
 
     private var dark = Tokens.of(context).dark
+    private var tokens = Tokens(dark)
     private var phase = Dictation.Phase.Off
     private var level = 0f
     private var shownAt = 0L
@@ -43,6 +44,7 @@ class MicKeyView(context: Context) : View(context) {
 
     fun applyTheme(dark: Boolean) {
         this.dark = dark
+        tokens = Tokens(dark)
         invalidate()
     }
 
@@ -61,7 +63,7 @@ class MicKeyView(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
-        val t = Tokens(dark)
+        val t = tokens
         val cx = width / 2f
         val cy = height / 2f
         val radius = min(width, height) / 2f - dp(2f)
