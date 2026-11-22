@@ -10,6 +10,7 @@
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 use color_eyre::eyre::{Result, WrapErr, bail};
 use fs2::FileExt;
@@ -240,8 +241,8 @@ pub fn stage(file: &Path, console: Option<&Path>, version: &str) -> Result<Stage
     if let Err(error) = crate::windows::login_item::repoint(&executable) {
         tracing::warn!(%error, "could not repoint Launch at login to the updated Hex");
     }
-    if let Err(error) = repoint_start_menu_shortcut(&executable) {
-        tracing::warn!(%error, "could not repoint the Start Menu shortcut to the updated Hex");
+    if let Err(error) = repoint_shortcuts(&support, &executable) {
+        tracing::warn!(%error, "could not repoint shortcuts to the updated Hex");
     }
     if let Err(error) = update_uninstall_entry(version) {
         tracing::warn!(%error, "could not update the Apps & Features version");
@@ -279,41 +280,129 @@ pub fn verify_authenticode(file: &Path, signer: &str) -> Result<()> {
     Ok(())
 }
 
-/// Retarget the installer-created Start Menu shortcut at the activated
-/// version, so pinned and Start Menu launches follow updates. Only a
-/// shortcut carrying the installer's managed description is touched.
-fn repoint_start_menu_shortcut(executable: &Path) -> Result<()> {
+/// Retarget every shortcut that belongs to this install in one PowerShell
+/// run: the Start Menu, Desktop, and taskbar pins. Only a shortcut whose
+/// target is `hex.exe` in this install's `versions\<version>` folder is
+/// touched; its arguments and name stay, and an icon from an old version
+/// follows. One bad folder or file never stops the rest.
+fn repoint_shortcuts(support: &Path, executable: &Path) -> Result<()> {
     let Some(appdata) = dirs::config_dir() else {
         return Ok(());
     };
-    let shortcut = appdata.join(r"Microsoft\Windows\Start Menu\Programs\Hex.lnk");
-    if !shortcut.exists() {
-        return Ok(());
-    }
-    let status = background_process::command("powershell.exe")
+    let folders = shortcut_folders(&appdata, dirs::desktop_dir());
+    retarget_shortcuts(&folders, support, executable)
+}
+
+/// The Start Menu Programs root, the Desktop from `dirs::desktop_dir` (so
+/// OneDrive redirection is followed), and the taskbar pins folder. An absent
+/// Desktop is empty and skipped.
+fn shortcut_folders(appdata: &Path, desktop: Option<PathBuf>) -> [PathBuf; 3] {
+    [
+        appdata.join(r"Microsoft\Windows\Start Menu\Programs"),
+        desktop.unwrap_or_default(),
+        appdata.join(r"Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar"),
+    ]
+}
+
+/// Runs the one PowerShell process over `folders` and waits for it with a
+/// bound: `stage` holds the update lock meanwhile, and a redirected Desktop on
+/// an unreachable network share can stall a shortcut read.
+fn retarget_shortcuts(folders: &[PathBuf; 3], support: &Path, executable: &Path) -> Result<()> {
+    let [programs, desktop, taskbar] = folders;
+    let mut child = background_process::command("powershell.exe")
         .args([
             "-NoProfile",
+            "-NonInteractive",
             "-WindowStyle",
             "Hidden",
             "-Command",
-            "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:HEX_SHORTCUT); \
-             if ($s.Description -eq 'Hex managed install') { \
-             $s.TargetPath = $env:HEX_EXECUTABLE; \
-             $s.WorkingDirectory = (Split-Path -Parent $env:HEX_EXECUTABLE); \
-             $s.Save() }",
+            SHORTCUT_REPOINT_SCRIPT,
         ])
-        .env("HEX_SHORTCUT", &shortcut)
+        .env("HEX_PROGRAMS", programs)
+        .env("HEX_DESKTOP", desktop)
+        .env("HEX_TASKBAR", taskbar)
+        .env("HEX_VERSIONS", support.join("versions"))
         .env("HEX_EXECUTABLE", executable)
+        .env_remove("PSModulePath")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .wrap_err("could not update the Start Menu shortcut")?;
+        .spawn()
+        .wrap_err("could not update shortcuts")?;
+    let status = wait_for_exit(&mut child)?;
     if !status.success() {
-        bail!("the Start Menu shortcut update exited with {status}");
+        bail!("the shortcut update exited with {status}");
     }
     Ok(())
 }
+
+/// How long the shortcut update may run before the update lock is released.
+const SHORTCUT_UPDATE_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Waits for `child` without blocking Hex's update lock forever: a redirected
+/// Desktop on an unreachable network share can keep PowerShell from finishing.
+fn wait_for_exit(child: &mut std::process::Child) -> Result<std::process::ExitStatus> {
+    let started = Instant::now();
+    loop {
+        match child
+            .try_wait()
+            .wrap_err("could not wait for the shortcut update")?
+        {
+            Some(status) => return Ok(status),
+            None if started.elapsed() >= SHORTCUT_UPDATE_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!(
+                    "the shortcut update did not finish within {} s",
+                    SHORTCUT_UPDATE_TIMEOUT.as_secs()
+                );
+            }
+            None => std::thread::sleep(Duration::from_millis(50)),
+        }
+    }
+}
+
+/// Every path arrives as an environment variable, so no path is interpolated
+/// into the script and its quoting cannot break out of it. Each folder and
+/// each file is independent: a missing folder or a failed save leaves the rest
+/// alone, and the failure still reaches `stage`'s warning.
+const SHORTCUT_REPOINT_SCRIPT: &str = "\
+    $ErrorActionPreference = 'Stop'; \
+    $shell = New-Object -ComObject WScript.Shell; \
+    $executable = $env:HEX_EXECUTABLE; \
+    $working = [IO.Path]::GetDirectoryName($executable); \
+    $versions = $env:HEX_VERSIONS.TrimEnd('\\') + '\\'; \
+    $folders = @($env:HEX_PROGRAMS, $env:HEX_DESKTOP, $env:HEX_TASKBAR); \
+    $failed = $false; \
+    foreach ($folder in $folders) { \
+      if (-not $folder) { continue } \
+      try { \
+        if (-not (Test-Path -LiteralPath $folder -ErrorAction SilentlyContinue)) { continue } \
+        foreach ($file in @(Get-ChildItem -LiteralPath $folder -Force -Filter '*.lnk' -File -ErrorAction SilentlyContinue)) { \
+          if (($file.Attributes -band 0x441000) -ne 0) { continue } \
+          $matched = $false; \
+          try { \
+            $s = $shell.CreateShortcut($file.FullName); \
+            $target = [string]$s.TargetPath; \
+            if (-not $target -or -not $target.StartsWith($versions, [StringComparison]::OrdinalIgnoreCase)) { continue } \
+            if ([IO.Path]::GetFileName($target) -ine 'hex.exe') { continue } \
+            $relative = $target.Substring($versions.Length).Split('\\'); \
+            if ($relative.Count -ne 2 -or -not $relative[0]) { continue } \
+            $matched = $true; \
+            $changed = $false; \
+            if (-not [string]::Equals($s.TargetPath, $executable, [StringComparison]::OrdinalIgnoreCase)) { $s.TargetPath = $executable; $changed = $true } \
+            if (-not [string]::Equals($s.WorkingDirectory, $working, [StringComparison]::OrdinalIgnoreCase)) { $s.WorkingDirectory = $working; $changed = $true } \
+            $icon = [string]$s.IconLocation; \
+            $comma = $icon.LastIndexOf(','); \
+            $iconPath = if ($comma -ge 0) { $icon.Substring(0, $comma) } else { $icon }; \
+            if ($iconPath -and $iconPath.StartsWith($versions, [StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($iconPath) -ieq 'hex.exe') { \
+              $index = if ($comma -ge 0) { $icon.Substring($comma) } else { ',0' }; \
+              $newIcon = $executable + $index; \
+              if (-not [string]::Equals($icon, $newIcon, [StringComparison]::OrdinalIgnoreCase)) { $s.IconLocation = $newIcon; $changed = $true } } \
+            if ($changed) { $s.Save() } \
+          } catch { if ($matched) { $failed = $true } } } \
+      } catch { } } \
+    if ($failed) { exit 1 }";
 
 /// Show the activated version in Apps & Features when Setup.exe installed
 /// Hex; script installs have no entry and are left alone.
@@ -707,6 +796,120 @@ mod tests {
         assert!(path_contains(path, r"c:\users\jo\appdata\roaming\HEX\bin"));
         assert!(!path_contains(path, r"C:\Users\Jo\AppData\Roaming\hex"));
         assert!(!path_contains("", r"C:\hex\bin"));
+    }
+
+    /// Creates a shortcut through PowerShell's WScript.Shell, the interface
+    /// the updater itself uses.
+    fn make_shortcut(link: &Path, target: &Path, description: &str, arguments: &str, icon: &str) {
+        let output = background_process::command("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:HEX_LINK); \
+                 $s.TargetPath = $env:HEX_TARGET; \
+                 $s.Description = $env:HEX_DESCRIPTION; \
+                 $s.Arguments = $env:HEX_ARGUMENTS; \
+                 if ($env:HEX_ICON) { $s.IconLocation = $env:HEX_ICON }; \
+                 $s.Save()",
+            ])
+            .env("HEX_LINK", link)
+            .env("HEX_TARGET", target)
+            .env("HEX_DESCRIPTION", description)
+            .env("HEX_ARGUMENTS", arguments)
+            .env("HEX_ICON", icon)
+            .env_remove("PSModulePath")
+            .output()
+            .expect("could not create a shortcut");
+        assert!(
+            output.status.success(),
+            "creating {} failed: {}",
+            link.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// A shortcut's target, working directory, arguments, and icon location.
+    fn read_shortcut(link: &Path) -> (String, String, String, String) {
+        let output = background_process::command("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:HEX_LINK); \
+                 [Console]::Out.Write(\"$($s.TargetPath)`n$($s.WorkingDirectory)`n$($s.Arguments)`n$($s.IconLocation)\")",
+            ])
+            .env("HEX_LINK", link)
+            .env_remove("PSModulePath")
+            .output()
+            .expect("could not read a shortcut");
+        assert!(
+            output.status.success(),
+            "reading {} failed: {}",
+            link.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut fields = text.lines();
+        (
+            fields.next().unwrap_or_default().to_owned(),
+            fields.next().unwrap_or_default().to_owned(),
+            fields.next().unwrap_or_default().to_owned(),
+            fields.next().unwrap_or_default().to_owned(),
+        )
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shortcuts_pointing_at_an_old_version_are_retargeted() {
+        // A long path: WScript.Shell expands an 8.3 short name (`RUNNER~1`)
+        // when it saves a shortcut, and the match is a prefix compare.
+        let root = dirs::data_local_dir()
+            .expect("a local app data folder")
+            .join(format!("hex-win-shortcuts-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let support = root.join("hex");
+        let old = support.join(r"versions\1.0.0\hex.exe");
+        let new = support.join(r"versions\2.0.0\hex.exe");
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::create_dir_all(new.parent().unwrap()).unwrap();
+        fs::write(&old, b"old").unwrap();
+        fs::write(&new, b"new").unwrap();
+        let folder = root.join("shortcuts");
+        fs::create_dir_all(&folder).unwrap();
+        let elsewhere = root.join("elsewhere").join("hex.exe");
+        fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+        fs::write(&elsewhere, b"other").unwrap();
+
+        let managed = folder.join("Hex.lnk");
+        make_shortcut(
+            &managed,
+            &old,
+            "Hex managed install",
+            "app",
+            &format!("{},0", old.display()),
+        );
+        // The installer's description alone no longer qualifies a shortcut.
+        let foreign = folder.join("Foreign.lnk");
+        make_shortcut(&foreign, &elsewhere, "Hex managed install", "app", "");
+        let unrelated = folder.join("Unrelated.lnk");
+        make_shortcut(&unrelated, &elsewhere, "", "", "");
+        let foreign_before = read_shortcut(&foreign);
+        let unrelated_before = read_shortcut(&unrelated);
+
+        let folders = [folder.clone(), PathBuf::new(), PathBuf::new()];
+        retarget_shortcuts(&folders, &support, &new).unwrap();
+
+        let (target, working, arguments, icon) = read_shortcut(&managed);
+        assert_eq!(target, new.display().to_string());
+        assert_eq!(working, new.parent().unwrap().display().to_string());
+        assert_eq!(arguments, "app");
+        assert_eq!(icon, format!("{},0", new.display()));
+        assert_eq!(read_shortcut(&foreign), foreign_before);
+        assert_eq!(read_shortcut(&unrelated), unrelated_before);
+        assert!(foreign.is_file() && unrelated.is_file());
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
