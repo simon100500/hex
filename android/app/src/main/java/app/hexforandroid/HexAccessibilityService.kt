@@ -51,7 +51,7 @@ class HexAccessibilityService : AccessibilityService() {
             type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
             type == AccessibilityEvent.TYPE_VIEW_FOCUSED
         ) {
-            refreshBubble()
+            scheduleBubble()
         }
     }
 
@@ -59,11 +59,12 @@ class HexAccessibilityService : AccessibilityService() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        bubble?.keepOnScreen()
+        bubble?.hide()
+        scheduleBubble()
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
-        main.removeCallbacks(hideLater)
+        main.removeCallbacks(settle)
         // Without the service there's no bubble to stop a recording with.
         Dictation.cancel()
         lastField = null
@@ -98,12 +99,28 @@ class HexAccessibilityService : AccessibilityService() {
 
     /** Shows the key only while Hex is on, a text field has focus, and the keyboard is open. */
     fun refreshBubble() {
+        main.removeCallbacks(settle)
+        applyBubble()
+    }
+
+    /**
+     * The keyboard animates in and out over several frames; placing the key on
+     * every window event made it chase the animation. Wait until the window
+     * bounds stop changing, then place once. A closed keyboard hides at once.
+     */
+    private fun scheduleBubble() {
         val bubble = bubble ?: return
-        main.removeCallbacks(hideLater)
-        if (bubbleWanted()) bubble.show()
-        // Windows change mid-animation, when the keyboard can briefly look
-        // closed: hide only once it has stayed closed for a moment.
-        else main.postDelayed(hideLater, HIDE_DELAY_MS)
+        main.removeCallbacks(settle)
+        if (imeBounds() == null) {
+            bubble.hide()
+            return
+        }
+        main.postDelayed(settle, SETTLE_MS)
+    }
+
+    private fun applyBubble() {
+        val bubble = bubble ?: return
+        if (bubbleWanted()) bubble.show() else bubble.hide()
     }
 
     private fun bubbleWanted(): Boolean {
@@ -113,7 +130,7 @@ class HexAccessibilityService : AccessibilityService() {
     }
 
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
-    private val hideLater = Runnable { if (!bubbleWanted()) bubble?.hide() }
+    private val settle = Runnable { applyBubble() }
 
     /** What the bubble's gestures do. */
     inner class Controls {
@@ -136,7 +153,7 @@ class HexAccessibilityService : AccessibilityService() {
     }
 
     companion object {
-        private const val HIDE_DELAY_MS = 400L
+        private const val SETTLE_MS = 220L
 
         @Volatile var instance: HexAccessibilityService? = null
             private set

@@ -118,13 +118,16 @@ class Bubble(
      */
     private fun place(): Boolean {
         val bounds = keyboardBounds() ?: return false
+        val screen = windows.currentWindowMetrics.bounds
         val density = context.resources.displayMetrics.density
         val margin = (4 * density).toInt()
-        val offset = (settings.keyOffsetX * density).toInt()
+        val offsetX = (settings.keyOffsetX * density).toInt()
+        val offsetY = (settings.keyOffsetY * density).toInt()
         val strip = (44 * density).toInt()
-        val x = bounds.right - params.width - margin + offset
-        params.x = x.coerceIn(bounds.left, maxOf(bounds.left, bounds.right - params.width))
-        params.y = bounds.top + maxOf(0, (strip - params.height) / 2)
+        val x = bounds.right - params.width - margin + offsetX
+        val y = bounds.top + maxOf(0, (strip - params.height) / 2) + offsetY
+        params.x = x.coerceIn(screen.left, maxOf(screen.left, screen.right - params.width))
+        params.y = y.coerceIn(screen.top, maxOf(screen.top, screen.bottom - params.height))
         if (shown) windows.updateViewLayout(key, params)
         return true
     }

@@ -179,7 +179,30 @@ class MainActivity : Activity() {
                 settings.keySize = it
                 restyle()
             }))
-            row(ui.row("Position", "Slide to clear the emoji key", below = offsetControl()))
+            row(ui.vertical {
+                setPadding(ui.px(16), ui.px(12), ui.px(14), ui.px(12))
+                addView(ui.text("Position", 15f, ui.medium, ui.t.text))
+                addView(ui.text("1 dp steps. Vertical can put the key over the keyboard; touches there go to dictation.", 13f, ui.regular, ui.t.muted).apply {
+                    setPadding(0, ui.px(3), 0, ui.px(10))
+                })
+                addView(axisControl("Horizontal", settings.keyOffsetX, -300, 40) {
+                    settings.keyOffsetX = it
+                    HexAccessibilityService.instance?.restyleBubble()
+                })
+                addView(ui.space(8))
+                addView(axisControl("Vertical", settings.keyOffsetY, -40, 360) {
+                    settings.keyOffsetY = it
+                    HexAccessibilityService.instance?.restyleBubble()
+                })
+                addView(ui.horizontal {
+                    setPadding(0, ui.px(8), 0, 0)
+                    addView(ui.button("Reset position") {
+                        settings.keyOffsetX = 0
+                        settings.keyOffsetY = 0
+                        recreate()
+                    })
+                })
+            })
             row(ui.row("Shows", "Only while a text field is focused and the keyboard is open"))
             row(ui.row("Tap", "Start, tap again to stop and insert"))
             row(ui.row("Hold", "Talk while held, release to insert"))
@@ -256,31 +279,53 @@ class MainActivity : Activity() {
         HexAccessibilityService.instance?.restyleBubble()
     }
 
-    /** Small nudges of the key along the keyboard's trailing edge, in dp. */
-    private fun offsetControl(): View {
-        val label = ui.text(offsetLabel(settings.keyOffsetX), 13f, ui.medium, ui.t.muted).apply {
+    /** A labelled 1 dp slider with nudge buttons, for one axis of the key's position. */
+    private fun axisControl(label: String, value: Int, min: Int, max: Int, onChange: (Int) -> Unit): View {
+        val valueView = ui.text(offsetLabel(value), 13f, ui.medium, ui.t.muted).apply {
             gravity = Gravity.CENTER
             minWidth = ui.px(58)
         }
-        val bar = SeekBar(this).apply {
-            max = 48
-            progress = (settings.keyOffsetX + 32).coerceIn(0, max)
+        lateinit var bar: SeekBar
+        fun setValue(next: Int) {
+            val clamped = next.coerceIn(min, max)
+            bar.progress = clamped - min
+            valueView.text = offsetLabel(clamped)
+            onChange(clamped)
+        }
+        bar = SeekBar(this).apply {
+            this.max = max - min
+            progress = value.coerceIn(min, max) - min
             progressTintList = ColorStateList.valueOf(ui.t.accent)
             thumbTintList = ColorStateList.valueOf(ui.t.accent)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                     if (!fromUser) return
-                    settings.keyOffsetX = progress - 32
-                    label.text = offsetLabel(settings.keyOffsetX)
-                    HexAccessibilityService.instance?.restyleBubble()
+                    valueView.text = offsetLabel(min + progress)
+                    onChange(min + progress)
                 }
                 override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
                 override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
             })
         }
-        return ui.horizontal {
-            addView(bar, LinearLayout.LayoutParams(ui.px(150), ViewGroup.LayoutParams.WRAP_CONTENT))
-            addView(label, LinearLayout.LayoutParams(ui.px(58), ViewGroup.LayoutParams.WRAP_CONTENT))
+        fun nudge(delta: Int) = setValue(min + bar.progress + delta)
+        val minus = ui.text("−", 22f, ui.medium, ui.t.muted).apply {
+            gravity = Gravity.CENTER
+            setOnClickListener { nudge(-1) }
+        }
+        val plus = ui.text("+", 22f, ui.medium, ui.t.muted).apply {
+            gravity = Gravity.CENTER
+            setOnClickListener { nudge(1) }
+        }
+        return ui.vertical {
+            addView(ui.horizontal {
+                addView(ui.text(label, 14f, ui.medium, ui.t.text), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(valueView)
+            })
+            addView(ui.horizontal {
+                addView(minus, LinearLayout.LayoutParams(ui.px(30), ui.px(40)))
+                addView(bar, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(plus, LinearLayout.LayoutParams(ui.px(30), ui.px(40)))
+            })
         }
     }
 

@@ -47,6 +47,8 @@ class Settings(context: Context) {
     var keySize by string("key_size", "M")
     /** Positive moves the key right, negative left, in dp. */
     var keyOffsetX by int("key_offset_x", 0)
+    /** Positive moves the key down, negative up, in dp from the strip's centre. */
+    var keyOffsetY by int("key_offset_y", 0)
 
     init {
         // 0.2 kept English text steps on by default; GigaAM's Russian must not

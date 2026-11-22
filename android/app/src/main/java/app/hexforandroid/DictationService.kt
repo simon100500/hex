@@ -5,12 +5,14 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.service.quicksettings.TileService
 
 /**
  * Keeps Hex armed: a microphone foreground service, started while the app is
@@ -24,6 +26,7 @@ class DictationService : Service() {
         if (state.shape != shown) {
             shown = state.shape
             notify(state)
+            refreshTile()
         }
     }
 
@@ -52,6 +55,7 @@ class DictationService : Service() {
         Dictation.listen(listener)
         Vocabulary.sync(this, minGapMs = 60_000)
         HexAccessibilityService.instance?.refreshBubble()
+        refreshTile()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -79,6 +83,7 @@ class DictationService : Service() {
         if (running) Dictation.disarm()
         running = false
         HexAccessibilityService.instance?.refreshBubble()
+        refreshTile()
         super.onDestroy()
     }
 
@@ -86,6 +91,12 @@ class DictationService : Service() {
 
     private fun notify(state: Dictation.State) {
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION, notification(state))
+    }
+
+    private fun refreshTile() {
+        runCatching {
+            TileService.requestListeningState(this, ComponentName(this, DictationTileService::class.java))
+        }
     }
 
     private fun notification(state: Dictation.State): Notification {
