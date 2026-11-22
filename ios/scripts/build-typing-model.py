@@ -278,13 +278,19 @@ POLISH_WORD = re.compile("[" + LETTERS["pl"] + "]+")
 POLISH_TOKEN = re.compile(r"\w+|[^\w\s]")
 
 
+POLISH_EDGE = ".,;:!?\"'()[]«»„”…"
+
+
 def polish_counts(source, work):
-    """Polish word and pair counts (lowercase, letters only) from `source`; pairs never span
+    """Polish word and pair counts (lowercase, letters only) from `source`. A pair may span a
+    comma, which people typing leave out ("wiem, że" is typed "wiem że"), never other
     punctuation or a word with other characters."""
     words, pairs = {}, {}
     def add(tokens, count=1):
         prev = None
         for t in tokens:
+            if t == "," and prev:
+                continue
             w = t if POLISH_WORD.fullmatch(t) else None
             if w:
                 words[w] = words.get(w, 0) + count
@@ -313,7 +319,12 @@ def polish_counts(source, work):
                 parts = line.split()
                 if len(parts) != n + 1 or not parts[0].isdigit():
                     continue
-                c, grams = int(parts[0]), [unicodedata.normalize("NFC", g) for g in parts[1:]]
+                c, raw = int(parts[0]), [unicodedata.normalize("NFC", g) for g in parts[1:]]
+                # The n-grams keep punctuation on its word ("wiem,"): strip it, letting only a
+                # comma sit between the two words of a pair.
+                grams = [g.strip(POLISH_EDGE) for g in raw]
+                if n == 2 and raw[0].rstrip(",") != raw[0].rstrip(POLISH_EDGE):
+                    continue
                 if not all(POLISH_WORD.fullmatch(g) for g in grams):
                     continue
                 target = words if n == 1 else pairs
