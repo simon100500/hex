@@ -4,8 +4,18 @@ Books Ngram v3 (2020-02-17, CC BY 3.0) word and word-pair counts, keeping only w
 word list knows: SCOWL (sizes up to 70) for English, RLA-ES (LibreOffice's es_ES and
 es_MX Hunspell dictionaries, used under their MPL 1.1 option) for Spanish. Counts are summed over 1980-2019.
 
+Polish has no Google Books counts. Its words and word pairs come from one of two corpora,
+kept only where PoliMorf (BSD 2-Clause) knows the word and the word isn't a plain spelling at
+least 20 times rarer than its marked twin ("sie" beside "się"):
+- parlamint: ParlaMint 5.0's Polish part, the Sejm and Senate transcripts 2015-2022 (CC BY
+  4.0, http://hdl.handle.net/11356/2004), counted from its TEI text;
+- nkjp: the National Corpus of Polish's n-grams from its 300M-word balanced subcorpus (CC BY,
+  http://zil.ipipan.waw.pl/NKJPNGrams).
+ł's base letter is l, so ł is read from the l key as é is from e.
+
     python3 -m venv /tmp/venv && /tmp/venv/bin/pip install spylls   # Spanish only
     /tmp/venv/bin/python scripts/build-typing-model.py es <workdir> HEXKeyboard/TypingModel/es.hextm
+    python3 scripts/build-typing-model.py pl <workdir> HEXKeyboard/TypingModel/pl.hextm parlamint
 
 Needs about 7 GB free in <workdir> while it runs (English downloads ~240 GB of ngrams,
 Spanish ~50 GB, each file deleted once counted) and a fast connection; every stage is
@@ -29,10 +39,19 @@ SCOWL = "https://downloads.sourceforge.net/project/wordlist/SCOWL/2020.12.07/sco
 RLA_ES = "https://raw.githubusercontent.com/LibreOffice/dictionaries/master/es/"
 RLA_ES_LOCALES = ("es_ES", "es_MX")
 FIRST_YEAR = 1980
-MAX_WORDS = {"en": 90_000, "es": 110_000}
+MAX_WORDS = {"en": 90_000, "es": 110_000, "pl": 150_000}
 MAX_BYTES = 3_600_000      # the whole model
 MIN_PAIR = 2_000           # pairs rarer than this (1980-2019) can't make the cut
-LETTERS = {"en": "abcdefghijklmnopqrstuvwxyz'", "es": "abcdefghijklmnopqrstuvwxyzñáéíóúü"}
+LETTERS = {"en": "abcdefghijklmnopqrstuvwxyz'", "es": "abcdefghijklmnopqrstuvwxyzñáéíóúü",
+           "pl": "abcdefghijklmnopqrstuvwxyząćęłńóśźż"}
+# Base letters NFD doesn't give: ł has no decomposition.
+BASES = {"ł": "l"}
+POLIMORF = "https://clarin-pl.eu/dspace/bitstream/handle/11321/577/polimorf-20180722.tab.gz?sequence=1"
+PARLAMINT_PL = "https://www.clarin.si/repository/xmlui/bitstream/handle/11356/2004/ParlaMint-PL.tgz?sequence=23&isAllowed=y"
+NKJP_NGRAMS = "http://zil.ipipan.waw.pl/NKJPNGrams?action=AttachFile&do=get&target={n}grams.gz"
+# The fewest times a pair is seen to be kept, per Polish corpus (36M and 300M words, against
+# the books' hundreds of billions).
+POLISH_MIN_PAIR = {"parlamint": 3, "nkjp": 10}
 
 
 def urls(lang, n):
@@ -200,11 +219,11 @@ def main(lang, work, out_path):
     write_model(lang, vocab, total, pairs, out_path)
 
 
-def write_model(lang, vocab, total, pairs, out_path):
+def write_model(lang, vocab, total, pairs, out_path, min_pair=MIN_PAIR):
     scalars = sorted({c for w in vocab for c in w})
     code = {c: i + 1 for i, c in enumerate(scalars)}
     def base(c):
-        b = unicodedata.normalize("NFD", c)[0]
+        b = BASES.get(c) or unicodedata.normalize("NFD", c)[0]
         return code.get(b, code[c])
     enc = {w: bytes(code[c] for c in w) for w in vocab}
     words = sorted(vocab, key=lambda w: enc[w])
@@ -217,7 +236,7 @@ def write_model(lang, vocab, total, pairs, out_path):
     # count x log(P(b | a) / (0.4 P(b))), positive only, best first, as many as fit.
     scored = []
     for k, c in pairs.items():
-        if c < MIN_PAIR:
+        if c < min_pair:
             continue
         a, b = k.decode("utf-8").split(" ")
         p = c / vocab[a]
@@ -255,7 +274,110 @@ def write_model(lang, vocab, total, pairs, out_path):
           f"{len(scalars)} letters, {len(out) / 1e6:.2f} MB")
 
 
+POLISH_WORD = re.compile("[" + LETTERS["pl"] + "]+")
+POLISH_TOKEN = re.compile(r"\w+|[^\w\s]")
+
+
+def polish_counts(source, work):
+    """Polish word and pair counts (lowercase, letters only) from `source`; pairs never span
+    punctuation or a word with other characters."""
+    words, pairs = {}, {}
+    def add(tokens, count=1):
+        prev = None
+        for t in tokens:
+            w = t if POLISH_WORD.fullmatch(t) else None
+            if w:
+                words[w] = words.get(w, 0) + count
+                if prev:
+                    k = prev + " " + w
+                    pairs[k] = pairs.get(k, 0) + count
+            prev = w
+    if source == "parlamint":
+        path = os.path.join(work, "ParlaMint-PL.tgz")
+        fetch(PARLAMINT_PL, path)
+        seg = re.compile(r"<seg\b[^>]*>(.*?)</seg>", re.S)
+        with tarfile.open(path) as t:
+            for m in t:
+                if not (m.isfile() and re.search(r"/\d{4}/ParlaMint-PL_[^/]+\.xml$", m.name)):
+                    continue
+                text = t.extractfile(m).read().decode("utf-8")
+                for body in seg.findall(text):
+                    body = re.sub(r"<[^>]+>", " ", body).replace("&amp;", "&")
+                    add(POLISH_TOKEN.findall(unicodedata.normalize("NFC", body).lower()))
+        return words, pairs
+    for n in (1, 2):
+        path = os.path.join(work, f"nkjp-{n}grams.gz")
+        fetch(NKJP_NGRAMS.format(n=n), path)
+        with gzip.open(path, "rt", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) != n + 1 or not parts[0].isdigit():
+                    continue
+                c, grams = int(parts[0]), [unicodedata.normalize("NFC", g) for g in parts[1:]]
+                if not all(POLISH_WORD.fullmatch(g) for g in grams):
+                    continue
+                target = words if n == 1 else pairs
+                key = " ".join(grams)
+                target[key] = target.get(key, 0) + c
+    return words, pairs
+
+
+def polimorf_forms(work):
+    path = os.path.join(work, "polimorf.tab.gz")
+    fetch(POLIMORF, path)
+    forms = set()
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        for line in f:
+            if not line.startswith("#"):
+                w = unicodedata.normalize("NFC", line.split("\t", 1)[0].lower())
+                if POLISH_WORD.fullmatch(w):
+                    forms.add(w)
+    return forms
+
+
+# A plain spelling at least this many times rarer than its marked twin ("sie" and "się",
+# "bedzie" and "będzie") is a typo PoliMorf happens to list, not a word to keep as typed.
+TWIN_RATIO = 20
+
+
+def fold(word):
+    return "".join(BASES.get(c) or unicodedata.normalize("NFD", c)[0] for c in word)
+
+
+def without_plain_twins(words):
+    """`words` (word -> count) less spellings with fewer marks than a twin TWIN_RATIO times as common."""
+    best = {}
+    for w, c in words.items():
+        f = fold(w)
+        if c > best.get(f, (0, ""))[0]:
+            best[f] = (c, w)
+    def marks(w):
+        return sum(a != b for a, b in zip(w, fold(w)))
+    return {w: c for w, c in words.items()
+            if not (best[fold(w)][0] >= TWIN_RATIO * c and marks(w) < marks(best[fold(w)][1]))}
+
+
+def main_polish(work, out_path, source):
+    """Polish: `source`'s counts, the words PoliMorf knows, the commonest MAX_WORDS of them."""
+    os.makedirs(work, exist_ok=True)
+    words, pairs = polish_counts(source, work)
+    total = sum(words.values())
+    forms = polimorf_forms(work)
+    listed = without_plain_twins({w: c for w, c in words.items() if w in forms})
+    kept = sorted(listed, key=lambda w: (-listed[w], w))[: MAX_WORDS["pl"]]
+    vocab = {w: words[w] for w in kept}
+    with open(os.path.join(work, f"vocab-{source}.tsv"), "w", encoding="utf-8") as f:
+        for w in kept:
+            f.write(f"{w}\t{vocab[w]}\n")
+    print(f"{source}: {total} words counted, {len(words)} distinct, {len(listed)} listed, {len(kept)} kept")
+    in_vocab = {k.encode("utf-8"): c for k, c in pairs.items() if all(p in vocab for p in k.split(" "))}
+    write_model("pl", vocab, total, in_vocab, out_path, POLISH_MIN_PAIR[source])
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 4 or sys.argv[1] not in FILES:
+    if len(sys.argv) == 5 and sys.argv[1] == "pl" and sys.argv[4] in POLISH_MIN_PAIR:
+        main_polish(sys.argv[2], sys.argv[3], sys.argv[4])
+    elif len(sys.argv) != 4 or sys.argv[1] not in FILES:
         sys.exit(__doc__)
-    main(*sys.argv[1:])
+    else:
+        main(*sys.argv[1:])
