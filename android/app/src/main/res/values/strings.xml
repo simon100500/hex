@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Hex for Android</string>
-    <string name="accessibility_description">Shows Hex\'s dictation bubble over other apps and types what you dictate into the focused text field. Hex reads the focused field only to place the text at your cursor. Speech is transcribed on this phone and nothing is sent anywhere.</string>
+    <string name="app_name">GigaAM Dictation</string>
+    <string name="accessibility_description">Shows a small dictation key over the keyboard while a text field is focused, and types what you dictate into that field. Speech is transcribed on this phone by GigaAM and nothing is sent anywhere.</string>
 </resources>

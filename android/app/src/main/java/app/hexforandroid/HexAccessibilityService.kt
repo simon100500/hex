@@ -3,6 +3,7 @@ package app.hexforandroid
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.content.res.Configuration
+import android.graphics.Rect
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
@@ -28,7 +29,7 @@ class HexAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         Dictation.init(this)
-        bubble = Bubble(this, Controls())
+        bubble = Bubble(this, Controls(), ::imeBounds)
         Dictation.listen(listener)
         refreshBubble()
     }
@@ -76,10 +77,26 @@ class HexAccessibilityService : AccessibilityService() {
     /** Settings changed the bubble's shape or size. */
     fun restyleBubble() = bubble?.restyle()
 
-    private fun keyboardOpen(): Boolean =
-        runCatching { windows.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD } }.getOrDefault(false)
+    /** The keyboard window's bounds, or null while no keyboard is open. */
+    private fun imeBounds(): Rect? = runCatching {
+        windows.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }?.let { window ->
+            Rect().also(window::getBoundsInScreen)
+        }
+    }.getOrNull()
 
-    /** Shows the bubble while Hex is on and, unless set to always, a keyboard is open. */
+    /** An editable field anywhere in the active app: the key exists only for one. */
+    private fun hasField(): Boolean {
+        val focus = runCatching { findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()
+            ?: runCatching { rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()
+        if (focus != null && focus.packageName != packageName && Inserter.takesText(focus)) return true
+        return lastField?.let { node ->
+            runCatching {
+                node.packageName != packageName && node.refresh() && node.isVisibleToUser && Inserter.takesText(node)
+            }.getOrDefault(false)
+        } == true
+    }
+
+    /** Shows the key only while Hex is on, a text field has focus, and the keyboard is open. */
     fun refreshBubble() {
         val bubble = bubble ?: return
         main.removeCallbacks(hideLater)
@@ -92,7 +109,7 @@ class HexAccessibilityService : AccessibilityService() {
     private fun bubbleWanted(): Boolean {
         val settings = Settings(this)
         val busy = Dictation.state.phase == Dictation.Phase.Recording || Dictation.state.phase == Dictation.Phase.Transcribing
-        return settings.enabled && (busy || settings.bubbleVisibility == "always" || keyboardOpen())
+        return settings.enabled && (busy || (imeBounds() != null && hasField()))
     }
 
     private val main = android.os.Handler(android.os.Looper.getMainLooper())

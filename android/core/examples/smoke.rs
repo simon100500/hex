@@ -24,7 +24,8 @@ fn main() {
             })
             .collect(),
         boost: (!terms.is_empty()).then_some(2.5),
-        language: Some("en".into()),
+        // GigaAM hears Russian without a language prompt.
+        language: None,
     };
     // The app keeps the model loaded, so the warm runs are the ones a
     // dictation sees. HEX_RUNS sets how many follow the cold one.
@@ -36,10 +37,10 @@ fn main() {
         eprintln!("warm: {} ms", run.inference_ms);
     }
     let steps = TextSteps {
-        spoken_formatting: true,
-        spoken_symbols: true,
-        filler_words: true,
-        language: "en".into(),
+        spoken_formatting: false,
+        spoken_symbols: false,
+        filler_words: false,
+        language: "ru".into(),
         replacements: vec![],
     };
     println!("raw:       {}", run.text);

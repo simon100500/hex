@@ -9,18 +9,20 @@ import java.net.URL
 import java.security.MessageDigest
 
 /**
- * Hex's recommended English model (`PARAKEET_UNIFIED_ENGLISH_ARTIFACT` in
- * src/transcription/artifacts.rs), pinned to the same revision and hash.
+ * GigaAM v3 e2e RNN-T, the Russian model Hex uses on the desktop
+ * (`GIGAAM_V3_E2E_RNNT_ARTIFACT` in src/transcription/artifacts.rs), pinned to
+ * the same revision and hash. Q5_K_M keeps the download at 197 MB and runs
+ * comfortably on a phone's CPU.
  *
  * The file lives in the app's external files directory so a development
  * machine can also `adb push` it there instead of downloading.
  */
 object ModelStore {
-    const val FILENAME = "parakeet-unified-en-0.6b-Q8_0.gguf"
-    private const val REPOSITORY = "handy-computer/parakeet-unified-en-0.6b-gguf"
-    private const val REVISION = "7e948f21b7bdbac698d3318db9d350f1096f3b6c"
-    const val BYTES = 731_357_568L
-    private const val SHA256 = "4b50b6dd862bf6e346929aaf4f5eaacec003bfa3f56462d6c874b41ef2f38795"
+    const val FILENAME = "gigaam-v3-e2e-rnnt-Q5_K_M.gguf"
+    private const val REPOSITORY = "handy-computer/gigaam-v3-e2e-rnnt-gguf"
+    private const val REVISION = "3efd5b39882ceadca5570a8fb9fa1a2c801d6d6d"
+    const val BYTES = 206_392_736L
+    private const val SHA256 = "0f5969b05f7e196e8922e243c64963132025a5ae7ec2f83d028ae120d201594f"
     private const val URL_STRING = "https://huggingface.co/$REPOSITORY/resolve/$REVISION/$FILENAME"
 
     fun dir(context: Context): File =

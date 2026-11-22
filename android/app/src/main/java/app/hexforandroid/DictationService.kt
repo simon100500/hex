@@ -94,7 +94,7 @@ class DictationService : Service() {
             Dictation.Phase.Loading -> "Loading the speech model…"
             Dictation.Phase.Recording -> "Listening…"
             Dictation.Phase.Transcribing -> "Transcribing…"
-            else -> "Tap the bubble, or hold it to talk"
+            else -> "Tap the mic key, or hold it to talk"
         }
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_hex)

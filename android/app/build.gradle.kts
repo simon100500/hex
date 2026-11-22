@@ -5,14 +5,14 @@ plugins {
 android {
     namespace = "app.hexforandroid"
     compileSdk = 36
-    ndkVersion = "30.0.16248370"
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
-        applicationId = "app.hexforandroid"
+        applicationId = "app.gigaam.dictation"
         minSdk = 30
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.2.0"
+        versionCode = 4
+        versionName = "0.3.0"
         ndk { abiFilters += "arm64-v8a" }
     }
 

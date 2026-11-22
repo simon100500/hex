@@ -31,7 +31,7 @@ import kotlin.concurrent.thread
 
 /**
  * Hex for Android's one window. The page keeps what people change: the
- * status, setup while anything is missing, the bubble, dictation and recent
+ * status, setup while anything is missing, the dictation key, dictation and recent
  * dictations. Clean-up steps, practice, full history and the rarely changed
  * settings live in sheets or under Advanced, as desktop Hex hides them.
  */
@@ -46,8 +46,7 @@ class MainActivity : Activity() {
     private lateinit var statusAction: LinearLayout
     private lateinit var setupSection: View
     private lateinit var setupCard: Ui.Card
-    private lateinit var stage: DotScope
-    private lateinit var vocabularyValue: TextView
+    private lateinit var stage: MicKeyView
     private lateinit var cleanupRow: Ui.Row
     private lateinit var recentCard: Ui.Card
     private lateinit var modelRow: Ui.Row
@@ -60,15 +59,12 @@ class MainActivity : Activity() {
     private var downloadProgress = 0
     /** The user went to the accessibility settings once; if Hex is still off there, Android may have greyed it out. */
     private var askedAccessibility = false
-    private var stageWidth: ValueAnimator? = null
-
     private var shown: List<Any?>? = null
     private val listener: (Dictation.State) -> Unit = { state ->
         stage.update(state)
         if (state.shape != shown) {
             shown = state.shape
             refresh()
-            followPill(state.phase)
         }
     }
     private val vocabularyListener: () -> Unit = { refresh() }
@@ -155,13 +151,10 @@ class MainActivity : Activity() {
         }
         root.addView(setupSection)
 
-        // Bubble: what it looks like and when it shows.
-        root.addView(ui.section("Bubble"))
-        stage = DotScope(this).apply {
-            shape = BubbleShape.of(settings.bubbleShape)
-            size = BubbleSize.of(settings.bubbleSize)
-            contentDescription = "Bubble preview"
-            showsReadyWhenOff = true
+        // Dictation key: the small mic the overlay puts in the keyboard's strip.
+        root.addView(ui.section("Dictation key"))
+        stage = MicKeyView(this).apply {
+            contentDescription = "Dictation key preview"
         }
         root.addView(ui.card().apply {
             row(FrameLayout(context).apply {
@@ -171,35 +164,17 @@ class MainActivity : Activity() {
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.END or Gravity.BOTTOM,
                 ).apply { setMargins(0, 0, ui.px(12), ui.px(12)) })
             })
-            row(ui.row("Shape", trailing = ui.iconSegmented(
-                BubbleShape.entries.map { Triple(it.name, it.icon, it.label) }, BubbleShape.of(settings.bubbleShape).name,
-            ) {
-                settings.bubbleShape = it
-                restyle()
-            }))
-            row(ui.row("Size", trailing = ui.segmented(
-                BubbleSize.entries.map { it.name to it.label }, BubbleSize.of(settings.bubbleSize).name,
-            ) {
-                settings.bubbleSize = it
-                restyle()
-            }))
-            row(ui.row("Show", below = ui.segmented(
-                listOf("keyboard" to "While typing", "always" to "Always"), settings.bubbleVisibility,
-            ) {
-                settings.bubbleVisibility = it
-                HexAccessibilityService.instance?.refreshBubble()
-            }))
+            row(ui.row("Shows", "Only while a text field is focused and the keyboard is open"))
+            row(ui.row("Tap", "Start, tap again to stop and insert"))
+            row(ui.row("Hold", "Talk while held, release to insert"))
         })
 
         // Dictation: what Hex writes.
         root.addView(ui.section("Dictation"))
-        val vocabulary = ui.sheetValue("")
-        vocabularyValue = vocabulary.getChildAt(0) as TextView
-        cleanupRow = ui.row("Clean-up", "", R.drawable.hex_icon_sparkles, trailing = chevron()) { cleanupSheet() }
+        cleanupRow = ui.row("Replacements", "", R.drawable.hex_icon_sparkles, trailing = chevron()) { cleanupSheet() }
         root.addView(ui.card().apply {
-            row(ui.row("Vocabulary", icon = R.drawable.hex_icon_book, trailing = vocabulary) { vocabularySheet() })
             row(cleanupRow)
-            row(ui.row("Practice", "Try the bubble without leaving Hex", R.drawable.hex_icon_mic, trailing = chevron()) { practiceSheet() })
+            row(ui.row("Practice", "Try the key without leaving Hex", R.drawable.hex_icon_mic, trailing = chevron()) { practiceSheet() })
         })
 
         root.addView(ui.horizontal {
@@ -219,7 +194,7 @@ class MainActivity : Activity() {
             addView(advancedChevron)
             setOnClickListener { toggleAdvanced() }
         })
-        modelRow = ui.row("Speech model", "Parakeet Unified English", R.drawable.hex_icon_wave, trailing = chevron()) { modelSheet() }
+        modelRow = ui.row("Speech model", "GigaAM v3 Russian", R.drawable.hex_icon_wave, trailing = chevron()) { modelSheet() }
         soundsRow = ui.row("Sounds", "", R.drawable.hex_icon_speaker, trailing = chevron()) { soundsSheet() }
         syncRow = ui.row("Desktop sync", "", R.drawable.hex_icon_refresh, trailing = chevron()) { syncSheet() }
         advanced = ui.card().apply {
@@ -259,27 +234,7 @@ class MainActivity : Activity() {
     }
 
     private fun restyle() {
-        stage.shape = BubbleShape.of(settings.bubbleShape)
-        stage.size = BubbleSize.of(settings.bubbleSize)
         HexAccessibilityService.instance?.restyleBubble()
-    }
-
-    /** The preview pill widens and narrows with the phase, as the bubble does. */
-    private fun followPill(phase: Dictation.Phase) {
-        if (stage.shape != BubbleShape.Pill) return
-        val target = when (phase) {
-            Dictation.Phase.Recording -> DotScope.RECORDING_WIDTH
-            Dictation.Phase.Transcribing -> DotScope.PROCESSING_WIDTH
-            else -> DotScope.REST_WIDTH
-        }
-        if (target == stage.pillWidth) return
-        stageWidth?.cancel()
-        stageWidth = ValueAnimator.ofFloat(stage.pillWidth, target).apply {
-            duration = 260
-            interpolator = OvershootInterpolator(1.1f)
-            addUpdateListener { stage.pillWidth = it.animatedValue as Float }
-            start()
-        }
     }
 
     // --- State ----------------------------------------------------------------
@@ -292,11 +247,11 @@ class MainActivity : Activity() {
 
         val (dot, title, line) = when {
             state.phase == Dictation.Phase.Loading -> Triple(t.accent, "Starting", "Loading the speech model…")
-            state.phase == Dictation.Phase.Recording && !Dictation.previewing -> Triple(t.danger, "Listening", "Tap the bubble to stop")
+            state.phase == Dictation.Phase.Recording && !Dictation.previewing -> Triple(t.danger, "Listening", "Tap the mic key to stop")
             state.phase == Dictation.Phase.Transcribing && !Dictation.previewing -> Triple(t.accent, "Transcribing", "")
-            DictationService.running -> Triple(t.success, "On", "Tap the bubble, or hold it to talk")
+            DictationService.running -> Triple(t.success, "On", "Tap the mic key, or hold it to talk")
             missing.isNotEmpty() -> Triple(t.faint, "Off", "Finish setting up below")
-            else -> Triple(t.faint, "Off", "Turn on to show the bubble")
+            else -> Triple(t.faint, "Off", "Turn on to dictate")
         }
         statusDot.background = ui.rounded(dot, 4f)
         statusTitle.text = title
@@ -313,15 +268,10 @@ class MainActivity : Activity() {
         missing.forEach { step -> setupCard.row(step.row()) }
         setupSection.visibility = if (missing.isEmpty()) View.GONE else View.VISIBLE
 
-        vocabularyValue.text = when (val terms = Vocabulary.entries(this).size) {
-            0 -> "None"
-            1 -> "1 term"
-            else -> "$terms terms"
-        }
         cleanupRow.describe(cleanupSummary())
         modelRow.describe(when {
             downloading != null -> "$downloading $downloadProgress%"
-            ModelStore.isPresent(this) -> "Parakeet Unified English"
+            ModelStore.isPresent(this) -> "GigaAM v3 Russian"
             else -> "Not downloaded"
         })
 
@@ -337,13 +287,12 @@ class MainActivity : Activity() {
     }
 
     private fun cleanupSummary(): String {
-        val on = listOfNotNull(
-            "Formatting".takeIf { settings.spokenFormatting },
-            "Symbols".takeIf { settings.spokenSymbols },
-            "Fillers".takeIf { settings.fillerWords },
-            settings.replacements().size.takeIf { it > 0 }?.let { if (it == 1) "1 replacement" else "$it replacements" },
-        )
-        return if (on.isEmpty()) "Off" else on.joinToString(" · ")
+        val count = settings.replacements().size
+        return when {
+            count == 0 -> "Off"
+            count == 1 -> "1 replacement"
+            else -> "$count replacements"
+        }
     }
 
     private fun historyRow(item: History.Item) = ui.horizontal {
@@ -400,7 +349,7 @@ class MainActivity : Activity() {
                     startActivity(Intent(AndroidSettings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
                 })
         } else {
-            SetupStep("Accessibility", "Shows the bubble and types for you", R.drawable.hex_icon_hand, "Open",
+            SetupStep("Accessibility", "Shows the mic key and types for you", R.drawable.hex_icon_hand, "Open",
                 { accessibilityOn() },
                 {
                     askedAccessibility = true
@@ -419,7 +368,7 @@ class MainActivity : Activity() {
                 { getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName) },
                 { startActivity(Intent(AndroidSettings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))) }),
             SetupStep("Speech model",
-                if (downloading != null) "$downloading $downloadProgress%" else "Parakeet Unified English · 731 MB",
+                if (downloading != null) "$downloading $downloadProgress%" else "GigaAM v3 Russian · 197 MB",
                 R.drawable.hex_icon_wave, if (ModelStore.isPresent(this)) "Verify" else "Download",
                 { ModelStore.isVerified(this) },
                 { fetchModel() }),
@@ -469,11 +418,11 @@ class MainActivity : Activity() {
     // --- Sheets ---------------------------------------------------------------
 
     private fun cleanupSheet() {
-        val sheet = Sheet(this, ui, "Clean-up", listOf("Runs on every dictation, top to bottom"))
-        val tryInput = ui.field("Um, open code shipped the hex app today hashtag launch")
+        val sheet = Sheet(this, ui, "Replacements", listOf("Words you say become the words you chose, on every dictation"))
+        val tryInput = ui.field("открой джиру")
         val tryResult = ui.text("", 15f, ui.medium)
         val update = { preview(tryInput, tryResult) }
-        val replaceRow = ui.row("Replace words", replacementSummary(), step = 4, trailing = chevron())
+        val replaceRow = ui.row("Replace words", replacementSummary(), step = 1, trailing = chevron())
         replaceRow.setOnClickListener {
             replacementsSheet {
                 replaceRow.describe(replacementSummary())
@@ -481,18 +430,6 @@ class MainActivity : Activity() {
             }
         }
         sheet.body.addView(ui.card().apply {
-            row(ui.row("Spoken formatting", "New line, open quote, close quote", step = 1, trailing = ui.switch(settings.spokenFormatting) {
-                settings.spokenFormatting = it
-                update()
-            }))
-            row(ui.row("Spoken symbols", "Hashtag, underscore, at sign", step = 2, trailing = ui.switch(settings.spokenSymbols) {
-                settings.spokenSymbols = it
-                update()
-            }))
-            row(ui.row("Remove filler words", "Um, uh, er", step = 3, trailing = ui.switch(settings.fillerWords) {
-                settings.fillerWords = it
-                update()
-            }))
             row(replaceRow)
             row(ui.vertical {
                 setPadding(ui.px(16), ui.px(12), ui.px(16), ui.px(14))
@@ -520,7 +457,7 @@ class MainActivity : Activity() {
     }
 
     private fun practiceSheet() {
-        val sheet = Sheet(this, ui, "Practice", listOf("Tap the field, then use the bubble, or Dictate"))
+        val sheet = Sheet(this, ui, "Practice", listOf("Tap the field, then use the mic key, or Dictate"))
         val field = ui.field("Dictated text appears here").apply {
             minLines = 3
             gravity = Gravity.TOP
@@ -630,12 +567,12 @@ class MainActivity : Activity() {
     }
 
     private fun modelSheet() {
-        val sheet = Sheet(this, ui, "Speech model", listOf("Parakeet Unified English, desktop Hex's English model, running on this phone"))
+        val sheet = Sheet(this, ui, "Speech model", listOf("GigaAM v3 Russian, desktop Hex's Russian model, running on this phone"))
         val card = ui.card()
         val state = Dictation.state
         val file = when {
-            ModelStore.isVerified(this) -> "731 MB · verified"
-            ModelStore.isPresent(this) -> "731 MB · not verified"
+            ModelStore.isVerified(this) -> "197 MB · verified"
+            ModelStore.isPresent(this) -> "197 MB · not verified"
             else -> "Not downloaded"
         }
         card.row(ui.row("File", file, R.drawable.hex_icon_folder))
@@ -662,7 +599,7 @@ class MainActivity : Activity() {
             })
         }
         sheet.body.addView(ui.card().apply {
-            row(ui.row("Snap to vocabulary", "Bias Parakeet toward these terms", trailing = ui.switch(settings.vocabularyBiasing) {
+            row(ui.row("Snap to vocabulary", "Rescore toward these terms (Parakeet only)", trailing = ui.switch(settings.vocabularyBiasing) {
                 settings.vocabularyBiasing = it
             }))
             row(ui.row("Strength", trailing = ui.segmented(
@@ -765,7 +702,7 @@ class MainActivity : Activity() {
         val card = ui.card()
         card.row(ui.row("Hex", "Anomaly · MIT License", R.drawable.hex_mark))
         card.row(ui.row("transcribe.cpp", "Speech engine · MIT License", R.drawable.hex_icon_terminal))
-        card.row(ui.row("Parakeet Unified English", "NVIDIA · CC-BY-4.0", R.drawable.hex_icon_wave))
+        card.row(ui.row("GigaAM v3 Russian", "Sber · MIT", R.drawable.hex_icon_wave))
         card.row(ui.row("Inter, IBM Plex Mono", "SIL Open Font License 1.1", R.drawable.hex_icon_text_tool))
         sheet.body.addView(card)
         sheet.actions(emptyList(), listOf(ui.button("Done") { sheet.dismiss() }))

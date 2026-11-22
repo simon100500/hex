@@ -7,8 +7,8 @@ import org.json.JSONObject
 
 /**
  * User settings, with defaults for someone who just installed the app:
- * Parakeet Unified English, spoken formatting and filler removal on, vocabulary
- * biasing on (it does nothing until there are terms), sounds off.
+ * GigaAM v3 Russian, no English text steps (the model already punctuates and
+ * capitalises), sounds off.
  */
 class Settings(context: Context) {
     private val app = context.applicationContext
@@ -16,10 +16,10 @@ class Settings(context: Context) {
 
     /** The user turned Hex on (the bubble shows) and hasn't turned it off. */
     var enabled by bool("enabled", false)
-    var spokenFormatting by bool("spoken_formatting", true)
+    var spokenFormatting by bool("spoken_formatting", false)
     /** Off by default: "hashtag" or "at sign" turning into symbols surprises people who didn't ask for it. */
     var spokenSymbols by bool("spoken_symbols", false)
-    var fillerWords by bool("filler_words", true)
+    var fillerWords by bool("filler_words", false)
     /** Desktop Hex's feedback sounds; off by default. */
     var sounds by bool("sounds", false)
     var soundSet by string("sound_set", Sounds.Set.Classic.id)
@@ -42,15 +42,25 @@ class Settings(context: Context) {
     var bubbleRight by bool("bubble_right", true)
     var bubbleTop by float("bubble_top", 0.42f)
 
+    init {
+        // 0.2 kept English text steps on by default; GigaAM's Russian must not
+        // run them after an in-place update.
+        if (prefs.getInt("settings_version", 1) < 2) {
+            prefs.edit()
+                .putBoolean("spoken_formatting", false)
+                .putBoolean("filler_words", false)
+                .putBoolean("spoken_symbols", false)
+                .putInt("settings_version", 2)
+                .apply()
+        }
+    }
+
     fun threadCount() = if (threads > 0) threads else autoThreads()
 
     fun runSettings(): JSONObject = JSONObject().apply {
-        put("language", "en")
-        val terms = Vocabulary.entries(app)
-        if (vocabularyBiasing && terms.isNotEmpty()) {
-            put("vocabulary", JSONArray(terms.map { it.toJson() }))
-            put("boost", boostNats())
-        }
+        // GigaAM has no language prompt and no vocabulary rescoring: it hears
+        // Russian itself. `language` stays absent, which the core reads as
+        // "the model's own choice".
     }
 
     fun boostNats() = when (vocabularyBoost) {
@@ -64,7 +74,7 @@ class Settings(context: Context) {
         put("spoken_formatting", spokenFormatting)
         put("spoken_symbols", spokenSymbols)
         put("filler_words", fillerWords)
-        put("language", "en")
+        put("language", "ru")
         put("replacements", JSONArray(replacements().map { (phrase, output) -> JSONObject().put("matched_phrase", phrase).put("output", output) }))
     }
 
