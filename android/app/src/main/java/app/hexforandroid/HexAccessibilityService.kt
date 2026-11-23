@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Rect
+import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
@@ -64,7 +65,7 @@ class HexAccessibilityService : AccessibilityService() {
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
-        main.removeCallbacks(settle)
+        main.removeCallbacks(watch)
         // Without the service there's no bubble to stop a recording with.
         Dictation.cancel()
         lastField = null
@@ -99,23 +100,27 @@ class HexAccessibilityService : AccessibilityService() {
 
     /** Shows the key only while Hex is on, a text field has focus, and the keyboard is open. */
     fun refreshBubble() {
-        main.removeCallbacks(settle)
-        applyBubble()
+        if (imeBounds() == null) {
+            main.removeCallbacks(watch)
+            pending = null
+            stable = 0
+            bubble?.hide()
+        } else {
+            scheduleBubble()
+        }
     }
 
     /**
-     * The keyboard animates in and out over several frames; placing the key on
-     * every window event made it chase the animation. Wait until the window
-     * bounds stop changing, then place once. A closed keyboard hides at once.
+     * The keyboard animates in over several frames and its accessibility
+     * bounds keep changing. Placing the key on a timer still caught an
+     * intermediate frame. Poll the bounds instead and place once they have
+     * stayed identical for a few ticks; a shrinking or descending window
+     * means the keyboard is closing, so hide at once.
      */
     private fun scheduleBubble() {
-        val bubble = bubble ?: return
-        main.removeCallbacks(settle)
-        if (imeBounds() == null) {
-            bubble.hide()
-            return
-        }
-        main.postDelayed(settle, SETTLE_MS)
+        main.removeCallbacks(watch)
+        stable = 0
+        main.postDelayed(watch, POLL_MS)
     }
 
     private fun applyBubble() {
@@ -130,7 +135,40 @@ class HexAccessibilityService : AccessibilityService() {
     }
 
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
-    private val settle = Runnable { applyBubble() }
+    private var pending: Rect? = null
+    private var stable = 0
+    private var openedAt = 0L
+    private val watch = object : Runnable {
+        override fun run() {
+            val bounds = imeBounds()
+            if (bounds == null) {
+                pending = null
+                stable = 0
+                openedAt = 0L
+                bubble?.hide()
+                return
+            }
+            val previous = pending
+            val slop = (24 * resources.displayMetrics.density).toInt()
+            if (previous != null && (bounds.height() < previous.height() - slop || bounds.top > previous.top + slop)) {
+                // Shrinking or sliding down: the keyboard is closing.
+                pending = null
+                stable = 0
+                openedAt = 0L
+                bubble?.hide()
+                return
+            }
+            if (previous == null) openedAt = SystemClock.uptimeMillis()
+            if (previous != null && bounds == previous) {
+                stable++
+            } else {
+                pending = Rect(bounds)
+                stable = 0
+            }
+            val waited = SystemClock.uptimeMillis() - openedAt
+            if (stable >= STABLE_TICKS && waited >= MIN_OPEN_MS) applyBubble() else main.postDelayed(this, POLL_MS)
+        }
+    }
 
     /** What the bubble's gestures do. */
     inner class Controls {
@@ -153,7 +191,10 @@ class HexAccessibilityService : AccessibilityService() {
     }
 
     companion object {
-        private const val SETTLE_MS = 220L
+        private const val POLL_MS = 80L
+        private const val STABLE_TICKS = 3
+        /** Even bounds that never change can precede a slow visual animation. */
+        private const val MIN_OPEN_MS = 420L
 
         @Volatile var instance: HexAccessibilityService? = null
             private set
